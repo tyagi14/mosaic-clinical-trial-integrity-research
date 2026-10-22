@@ -1,0 +1,115 @@
+# ============================================================================
+# deployment/gcp/cloud_run.yaml — Cloud Run service definition for MOSAIC
+#
+# This is the declarative alternative to a long `gcloud run deploy` command.
+#
+# APPLY:
+#   gcloud run services replace deployment/gcp/cloud_run.yaml --region us-central1
+#
+# BEFORE APPLYING, replace every PROJECT_ID / INSTANCE_NAME placeholder, and
+# create the two secrets this file references:
+#   echo -n "$OPENAI_API_KEY" | gcloud secrets create openai-api-key --data-file=-
+#   echo -n "$DB_PASSWORD"    | gcloud secrets create db-password    --data-file=-
+# ============================================================================
+
+apiVersion: serving.knative.dev/v1
+kind: Service
+metadata:
+  name: mosaic-api
+  annotations:
+    run.googleapis.com/ingress: all
+
+spec:
+  template:
+    metadata:
+      annotations:
+        # Attach the Cloud SQL instance. This is what creates the Unix
+        # socket at /cloudsql/... that DB_HOST points to below — without
+        # it, the container cannot reach the database at all.
+        run.googleapis.com/cloudsql-instances: PROJECT_ID:us-central1:INSTANCE_NAME
+
+        # An analysis run holds six agents and their LLM calls open at
+        # once, so keep one instance warm and cap concurrency low.
+        autoscaling.knative.dev/minScale: "1"
+        autoscaling.knative.dev/maxScale: "10"
+
+    spec:
+      # A full six-agent run takes ~20-60s. The default 300s is cut close
+      # when the external APIs are slow, so this is raised.
+      timeoutSeconds: 900
+
+      # One request per instance: each run opens several database pools
+      # and makes dozens of concurrent LLM calls. Packing requests onto
+      # one instance is how you exhaust the Cloud SQL connection limit.
+      containerConcurrency: 4
+
+      containers:
+        - image: gcr.io/PROJECT_ID/mosaic-api:latest
+
+          ports:
+            - containerPort: 8000
+
+          resources:
+            limits:
+              cpu: "2"
+              memory: 2Gi
+              # 2Gi because six agents each hold a conversation plus
+              # tool output in memory simultaneously.
+
+          env:
+            # ── database ────────────────────────────────────────────────
+            # The socket path, NOT an IP: Cloud Run reaches Cloud SQL
+            # through the Unix socket created by the annotation above.
+            - name: DB_HOST
+              value: /cloudsql/PROJECT_ID:us-central1:INSTANCE_NAME
+            - name: DB_PORT
+              value: "5432"
+            - name: DB_NAME
+              value: clinical_trial_db
+            - name: DB_USER
+              value: mosaic_user
+
+            # ── gcp ─────────────────────────────────────────────────────
+            - name: GCP_PROJECT_ID
+              value: PROJECT_ID
+            - name: GCP_REGION
+              value: us-central1
+            - name: GCS_BUCKET_NAME
+              value: BUCKET_NAME
+
+            # ── models and runtime ──────────────────────────────────────
+            - name: OPENAI_EMBEDDING_MODEL
+              value: text-embedding-3-small
+            - name: OPENAI_CHAT_MODEL
+              value: gpt-4o
+            - name: API_ENV
+              value: production
+              # production tightens CORS in api/main.py.
+
+            # ── secrets, never plain env values ─────────────────────────
+            - name: OPENAI_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: openai-api-key
+                  key: latest
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: db-password
+                  key: latest
+
+          startupProbe:
+            # api/main.py's lifespan seeds the default agent procedures
+            # before it reports ready, which needs a database round trip.
+            httpGet:
+              path: /api/v1/health
+              port: 8000
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            failureThreshold: 6
+
+          livenessProbe:
+            httpGet:
+              path: /api/v1/health
+              port: 8000
+            periodSeconds: 30

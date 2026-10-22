@@ -1,0 +1,62 @@
+# ============================================================================
+# MOSAIC — Python dependencies
+#
+# Install with:
+#   pip install -r requirements.txt
+#
+# Every package below is actually imported by the codebase. Packages that
+# were listed here but never imported have been removed and are noted at
+# the bottom, so nobody has to guess whether they are load-bearing.
+# ============================================================================
+
+# ── CONFIGURATION ───────────────────────────────────────────────────────────
+python-dotenv                 # .env loading
+pydantic                      # typed models — api/schemas.py, parsed documents
+pydantic-settings             # config/settings.py reads and validates .env
+
+# ── API SERVER ──────────────────────────────────────────────────────────────
+fastapi                       # api/main.py and the four routers
+uvicorn[standard]             # the ASGI server that runs FastAPI
+python-multipart              # form parsing, required by FastAPI for uploads
+
+# ── AGENTS AND LLM ──────────────────────────────────────────────────────────
+langgraph                     # graph/graph_builder.py — the agent graph
+langchain-core                # messages and the @tool decorator
+langchain-openai              # ChatOpenAI, used by all six agents
+openai                        # AsyncOpenAI, used directly for embeddings
+
+# ── DATABASE ────────────────────────────────────────────────────────────────
+asyncpg                       # the only Postgres driver used anywhere
+
+# ── EXTERNAL APIS ───────────────────────────────────────────────────────────
+httpx                         # ingestion/pubmed_client.py
+requests                      # ingestion/clinical_trials_client.py
+                              # NOTE: the two clients were written against
+                              # different HTTP libraries. Both are needed
+                              # until one of them is ported.
+tenacity                      # retry/backoff on both API clients
+
+# ── GOOGLE CLOUD ────────────────────────────────────────────────────────────
+google-cloud-storage          # ingestion/gcs_store.py — raw document archive
+
+# ── TESTING ─────────────────────────────────────────────────────────────────
+pytest                        # tests/
+pytest-asyncio                # async test support
+pytest-cov                    # coverage reporting
+
+# ── REMOVED, AND WHY ────────────────────────────────────────────────────────
+# langmem                     not imported anywhere — the three memory
+#                             stores in memory/ are hand-written on asyncpg
+# langchain                   only langchain-core and langchain-openai are
+#                             imported; the umbrella package is not
+# langchain-community         not imported anywhere
+# sqlalchemy[asyncio]         not imported — all SQL is raw asyncpg
+# psycopg2-binary             not imported — asyncpg is the driver, and this
+#                             one needs a compiler toolchain in Docker
+# pgvector                    not imported — the VECTOR codec is registered
+#                             by hand in vector_store/episodic_store
+# google-cloud-secret-manager not imported — secrets come from .env locally
+#                             and from Cloud Run env vars in production
+# langsmith                   pulled in by langchain-core when tracing is on
+# structlog                   not imported — config/logging_config.py uses
+#                             the standard library logging module
