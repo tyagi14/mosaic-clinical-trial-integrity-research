@@ -13,6 +13,128 @@ wrong — so a correction given once changes every future run.
 
 ---
 
+## Architecture
+
+```mermaid
+flowchart TD
+
+subgraph DS["DATA SOURCES"]
+  direction LR
+  CT["ClinicalTrials.gov API v2<br/>free · no auth · paginated"]
+  PM["PubMed eUtils API<br/>free · no auth · esearch + efetch"]
+end
+
+subgraph ING["INGESTION LAYER"]
+  direction LR
+  CTC["clinical_trials_client.py<br/>httpx · retry · pagination"]
+  PMC["pubmed_client.py<br/>XML parse · rate limited"]
+  DP["document_parser.py<br/>raw JSON to ParsedStudy · Pydantic"]
+end
+
+subgraph STO["GCP STORAGE LAYER"]
+  direction LR
+  GCS["Google Cloud Storage<br/>145 raw · 145 parsed"]
+  SQL[("Cloud SQL · PostgreSQL + pgvector<br/>studies · chunks · signals<br/>episodes · procedures · sponsor_profiles")]
+end
+
+subgraph PRO["PROCESSING LAYER"]
+  direction LR
+  CH["chunker.py<br/>500 words · 50-word overlap"]
+  EM["embedder.py<br/>text-embedding-3-small<br/>1536 dims · batch 50"]
+  VS["vector_store.py<br/>asyncpg pool · cosine distance<br/>146 chunks stored"]
+end
+
+subgraph MEM["MEMORY LAYER"]
+  direction LR
+  EP["Episodic · episodes<br/>past sessions, searchable by meaning"]
+  PR["Procedural · procedures<br/>each agent's reasoning rules"]
+  SEM["Semantic · sponsor_profiles<br/>credibility per sponsor"]
+end
+
+subgraph AG["AGENT GRAPH — LangGraph + GPT-4o, parallel"]
+  SUP["supervisor<br/>fan-out to all six, every run"]
+  A1["missing_results<br/>missing_results"]
+  A2["broken_promises<br/>broken_promise"]
+  A3["track_record<br/>low_credibility"]
+  A4["pattern_finder<br/>cross_study_pattern"]
+  A5["side_effect<br/>safety_gap"]
+  A6["timeline<br/>timeline_delay"]
+  CMP["supervisor_compile<br/>merges six lists, writes the brief"]
+end
+
+subgraph GATE["HUMAN-IN-THE-LOOP GATE — one threshold, 0.6"]
+  direction LR
+  AUTO["at or above 0.6<br/>stored automatically"]
+  RQ["below 0.6<br/>review queue, awaits an analyst"]
+  LL["the learning loop<br/>rejection reason becomes a rule"]
+end
+
+subgraph API["FASTAPI on CLOUD RUN"]
+  direction LR
+  EPTS["POST /api/v1/analyze<br/>GET /api/v1/signals<br/>GET /api/v1/review/queue<br/>PATCH /api/v1/review/id<br/>GET /api/v1/memory/episodes<br/>GET /api/v1/sponsors<br/>GET /api/v1/health"]
+  RUN["Google Cloud Run<br/>serverless · scales to zero"]
+end
+
+subgraph OBS["OBSERVABILITY + SECRETS"]
+  direction LR
+  LS["LangSmith<br/>agent traces · token usage"]
+  SM["GCP Secret Manager<br/>OpenAI key · DB credentials"]
+  CL["GCP Cloud Logging<br/>activation logs · latency"]
+end
+
+CT --> CTC
+PM --> PMC
+CTC --> DP
+PMC --> DP
+DP -->|archive| GCS
+GCS --> CH
+CH --> EM
+EM --> VS
+VS -->|store vectors| SQL
+SQL -.->|backs| MEM
+
+SUP --> A1 & A2 & A3 & A4 & A5 & A6
+A1 & A2 & A3 & A4 & A5 & A6 --> CMP
+MEM -.->|rules in, episodes out| AG
+SQL -.->|semantic search| AG
+
+CMP --> AUTO
+CMP --> RQ
+RQ -->|analyst rejects + reason| LL
+LL -.->|new rule, loaded by every future run| PR
+AUTO --> SQL
+
+API --> SUP
+AG -.-> OBS
+
+classDef src fill:#e8f0fe,stroke:#1a73e8,stroke-width:1px,color:#0b2a5b
+classDef ing fill:#fff3e0,stroke:#e8710a,stroke-width:1px,color:#6b3200
+classDef sto fill:#e6f4ea,stroke:#137333,stroke-width:1px,color:#0c3b1c
+classDef pro fill:#f3e8fd,stroke:#7b1fa2,stroke-width:1px,color:#3d1052
+classDef mem fill:#fce8e6,stroke:#c5221f,stroke-width:1px,color:#5c0f0d
+classDef agt fill:#fde9ef,stroke:#c2185b,stroke-width:1px,color:#55102b
+classDef sup fill:#202124,stroke:#202124,stroke-width:1px,color:#ffffff
+classDef gat fill:#fff8e1,stroke:#f9a825,stroke-width:1px,color:#5b4300
+classDef api fill:#e0f7fa,stroke:#00838f,stroke-width:1px,color:#003c42
+classDef obs fill:#ede7f6,stroke:#512da8,stroke-width:1px,color:#231052
+
+class CT,PM src
+class CTC,PMC,DP ing
+class GCS,SQL sto
+class CH,EM,VS pro
+class EP,PR,SEM mem
+class A1,A2,A3,A4,A5,A6,CMP agt
+class SUP sup
+class AUTO,RQ,LL gat
+class EPTS,RUN api
+class LS,SM,CL obs
+```
+
+Solid arrows carry data; dashed arrows carry rules, traces and retrieval.
+Counts are the live figures from the current database, not capacities.
+
+---
+
 ## Quick start
 
 ```bash
